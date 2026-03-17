@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JNV Library Professional V4.1 (Final Complete)</title>
+    <title>JNV Library Professional V4.1 (IndexedDB Edition)</title>
     <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
     <style>
         :root {
@@ -16,12 +16,11 @@
             --success: #28a745;
         }
 
-        body { margin: 0; font-family: 'Segoe UI', Tahoma, sans-serif; background: var(--bg); background-size: cover; background-attachment: fixed; min-height: 100vh; transition: 0.3s; display: flex; flex-direction: column; padding-bottom: 60px; /* Footer ke liye space */ }
+        body { margin: 0; font-family: 'Segoe UI', Tahoma, sans-serif; background: var(--bg); background-size: cover; background-attachment: fixed; min-height: 100vh; transition: 0.3s; display: flex; flex-direction: column; padding-bottom: 60px; }
 
         header { background: var(--primary); color: white; padding: 15px; text-align: center; box-shadow: 0 2px 10px rgba(0,0,0,0.2); }
         #libLogo { height: 80px; width: auto; display: none; margin: 0 auto 10px auto; border-radius: 8px; border: 2px solid var(--accent); }
 
-        /* Footer Style Fixed */
         footer { 
             background: var(--primary); 
             color: white; 
@@ -48,14 +47,13 @@
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
         .card { background: var(--white); padding: 15px; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); margin-bottom: 15px; }
 
-        /* Sticky Blue Header Correction */
         .blue-header { 
             background: linear-gradient(90deg, var(--primary), var(--secondary)); 
             color: white; padding: 15px 20px; border-radius: 10px; 
             display: flex; justify-content: space-between; align-items: center; 
             margin-bottom: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.2);
             position: sticky;
-            top: 60px; /* Nav bar ke niche fix */
+            top: 60px; 
             z-index: 90;
         }
 
@@ -72,7 +70,6 @@
         #shelfArea { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 15px; margin-top: 15px; }
         .shelfBox { background: var(--success); color: white; padding: 20px 10px; text-align: center; border-radius: 10px; cursor: pointer; font-weight: bold; transition: 0.3s; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
         .shelfBox:hover { transform: translateY(-3px); filter: brightness(1.1); }
-        /* Active Shelf Color Change Correction */
         .shelfBox.active-shelf { background: var(--accent); color: #000; border: 2px solid var(--primary); }
         
         .table-container { overflow-x: auto; margin-top: 15px; background: white; border-radius: 8px; border: 1px solid #eee; }
@@ -216,33 +213,69 @@
     let masterData = [], shelves = {}, headers = [], activeShelf = null, movingBookData = null;
 
     const dbName = "VivekLibDB_Final";
-    function openDB(cb) {
-        let req = indexedDB.open(dbName, 1);
-        req.onupgradeneeded = (e) => e.target.result.createObjectStore("Settings");
-        req.onsuccess = (e) => cb(e.target.result);
-    }
-    function saveToDB(key, val) { openDB(db => db.transaction("Settings", "readwrite").objectStore("Settings").put(val, key)); }
-    function getFromDB(key, cb) { openDB(db => {
-        let req = db.transaction("Settings", "readonly").objectStore("Settings").get(key);
-        req.onsuccess = () => cb(req.result);
-    }); }
+    const storeName = "LibraryStore";
 
-    window.onload = function() {
-        let saved = localStorage.getItem("jnvLibrary_V41");
-        if(saved) {
-            let data = JSON.parse(saved);
-            masterData = data.masterData || [];
-            shelves = data.shelves || {};
-            headers = data.headers || [];
+    // IndexedDB initialization
+    function initDB() {
+        return new Promise((resolve, reject) => {
+            let request = indexedDB.open(dbName, 2);
+            request.onupgradeneeded = (e) => {
+                let db = e.target.result;
+                if (!db.objectStoreNames.contains(storeName)) db.createObjectStore(storeName);
+                if (!db.objectStoreNames.contains("Settings")) db.createObjectStore("Settings");
+            };
+            request.onsuccess = (e) => resolve(e.target.result);
+            request.onerror = (e) => reject(e.target.error);
+        });
+    }
+
+    async function saveToDB(key, val, store = "Settings") {
+        let db = await initDB();
+        return new Promise((resolve) => {
+            let tx = db.transaction(store, "readwrite");
+            tx.objectStore(store).put(val, key);
+            tx.oncomplete = () => resolve();
+        });
+    }
+
+    async function getFromDB(key, store = "Settings") {
+        let db = await initDB();
+        return new Promise((resolve) => {
+            let req = db.transaction(store, "readonly").objectStore(store).get(key);
+            req.onsuccess = () => resolve(req.result);
+        });
+    }
+
+    window.onload = async function() {
+        // Load Main Data from IndexedDB
+        let savedData = await getFromDB("main_app_data", storeName);
+        if(savedData) {
+            masterData = savedData.masterData || [];
+            shelves = savedData.shelves || {};
+            headers = savedData.headers || [];
             renderShelves(); updateStats();
+        } else {
+            // Check legacy localStorage for migration
+            let legacy = localStorage.getItem("jnvLibrary_V41");
+            if(legacy) {
+                let d = JSON.parse(legacy);
+                masterData = d.masterData; shelves = d.shelves; headers = d.headers;
+                autoSave(); // Save to IndexedDB
+            }
         }
-        getFromDB("libLogo", (val) => { if(val) { let img = document.getElementById("libLogo"); img.src = val; img.style.display = "block"; } });
-        getFromDB("customBG", (val) => { if(val) { if(val.startsWith('url')) document.body.style.backgroundImage = val; else document.body.style.backgroundColor = val; } });
+
+        // Load Settings
+        let logo = await getFromDB("libLogo");
+        if(logo) { let img = document.getElementById("libLogo"); img.src = logo; img.style.display = "block"; }
+        
+        let bg = await getFromDB("customBG");
+        if(bg) { if(bg.startsWith('url')) document.body.style.backgroundImage = bg; else document.body.style.backgroundColor = bg; }
+        
         openSection('master');
     }
 
-    function autoSave() { 
-        localStorage.setItem("jnvLibrary_V41", JSON.stringify({masterData, shelves, headers})); 
+    async function autoSave() { 
+        await saveToDB("main_app_data", {masterData, shelves, headers}, storeName);
         updateStats(); 
     }
 
@@ -324,7 +357,7 @@
         for(let s in shelves) {
             let box = document.createElement("div"); 
             box.className = "shelfBox"; 
-            if(activeShelf === s) box.classList.add("active-shelf"); // Highlight Active
+            if(activeShelf === s) box.classList.add("active-shelf"); 
             box.innerText = s;
             box.onclick = () => openShelf(s); area.appendChild(box);
         }
@@ -332,7 +365,7 @@
 
     function openShelf(n) {
         activeShelf = n; 
-        renderShelves(); // Refresh colors
+        renderShelves(); 
         document.getElementById("rackDisplayArea").style.display = "block";
         document.getElementById("activeShelfTitle").innerText = "  " + n; 
         loadRacks();
@@ -458,11 +491,11 @@
         a.download = "Library_Backup_" + new Date().toLocaleDateString() + ".json"; a.click();
     }
     function restoreData(e) {
-        let r = new FileReader(); r.onload = (ev) => {
+        let r = new FileReader(); r.onload = async (ev) => {
             try {
                 let d = JSON.parse(ev.target.result);
                 masterData = d.masterData; shelves = d.shelves; headers = d.headers;
-                autoSave(); location.reload();
+                await autoSave(); location.reload();
             } catch(err) { alert("Invalid file."); }
         };
         r.readAsText(e.target.files[0]);
@@ -475,10 +508,10 @@
         let ws = XLSX.utils.json_to_sheet(missing); let wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Missing"); XLSX.writeFile(wb, "Missing_Books.xlsx");
     }
 
-    function saveLogo(e) { let r = new FileReader(); r.onload = () => { let img = document.getElementById("libLogo"); img.src = r.result; img.style.display = "block"; saveToDB("libLogo", r.result); }; r.readAsDataURL(e.target.files[0]); }
-    function saveBGImage(e) { let r = new FileReader(); r.onload = () => { let u = `url('${r.result}')`; document.body.style.backgroundImage = u; saveToDB("customBG", u); }; r.readAsDataURL(e.target.files[0]); }
+    function saveLogo(e) { let r = new FileReader(); r.onload = async () => { let img = document.getElementById("libLogo"); img.src = r.result; img.style.display = "block"; await saveToDB("libLogo", r.result); }; r.readAsDataURL(e.target.files[0]); }
+    function saveBGImage(e) { let r = new FileReader(); r.onload = async () => { let u = `url('${r.result}')`; document.body.style.backgroundImage = u; await saveToDB("customBG", u); }; r.readAsDataURL(e.target.files[0]); }
     function saveBGColor(c) { document.body.style.backgroundImage = "none"; document.body.style.backgroundColor = c; saveToDB("customBG", c); }
-    function resetSettings() { saveToDB("libLogo", null); saveToDB("customBG", null); location.reload(); }
+    async function resetSettings() { await saveToDB("libLogo", null); await saveToDB("customBG", null); location.reload(); }
 
     function openSection(id) {
         document.querySelectorAll(".section").forEach(s => s.style.display = "none");
